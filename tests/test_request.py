@@ -11,3 +11,8 @@ class TestRequest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_mean_tpot(self):
+        req = Request("r2", [1], max_tokens=2)
+        req.record_generated_token(10)
+        self.assertGreaterEqual(req.get_mean_tpot(), 0.0)
