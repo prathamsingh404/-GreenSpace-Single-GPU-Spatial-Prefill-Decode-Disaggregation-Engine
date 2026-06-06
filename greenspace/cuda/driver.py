@@ -13,3 +13,12 @@ CUDA_ERROR_OUT_OF_MEMORY = 2
 
 class CUDADriverError(RuntimeError):
     pass
+
+class CUdevSmResource(ctypes.Structure):
+    _fields_ = [("smCount", ctypes.c_uint32)]
+
+class CUdevResource(ctypes.Structure):
+    _fields_ = [
+        ("type", ctypes.c_uint32),
+        ("sm", CUdevSmResource)
+    ]
