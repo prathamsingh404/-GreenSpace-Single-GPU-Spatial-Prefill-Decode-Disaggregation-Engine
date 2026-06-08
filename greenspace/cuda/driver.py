@@ -22,3 +22,7 @@ class CUdevResource(ctypes.Structure):
         ("type", ctypes.c_uint32),
         ("sm", CUdevSmResource)
     ]
+
+CUgreenCtx = ctypes.c_void_p
+CUcontext = ctypes.c_void_p
+CUstream = ctypes.c_void_p
