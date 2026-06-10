@@ -26,3 +26,5 @@ class CUdevResource(ctypes.Structure):
 CUgreenCtx = ctypes.c_void_p
 CUcontext = ctypes.c_void_p
 CUstream = ctypes.c_void_p
+
+# cuDeviceGetDevResource driver binding
