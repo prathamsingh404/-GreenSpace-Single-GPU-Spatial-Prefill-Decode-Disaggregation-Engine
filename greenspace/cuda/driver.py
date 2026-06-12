@@ -28,3 +28,5 @@ CUcontext = ctypes.c_void_p
 CUstream = ctypes.c_void_p
 
 # cuDeviceGetDevResource driver binding
+
+# cuDevResourceGenerateDesc driver binding
