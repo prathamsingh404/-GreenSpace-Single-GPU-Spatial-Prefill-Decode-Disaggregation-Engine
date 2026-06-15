@@ -30,3 +30,5 @@ CUstream = ctypes.c_void_p
 # cuDeviceGetDevResource driver binding
 
 # cuDevResourceGenerateDesc driver binding
+
+# cuGreenCtxCreate and cuGreenCtxDestroy driver bindings
