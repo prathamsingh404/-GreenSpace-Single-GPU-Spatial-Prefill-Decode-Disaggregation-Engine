@@ -32,3 +32,5 @@ CUstream = ctypes.c_void_p
 # cuDevResourceGenerateDesc driver binding
 
 # cuGreenCtxCreate and cuGreenCtxDestroy driver bindings
+
+# cuCtxFromGreenCtx and cuStreamCreateWithPriority driver bindings
