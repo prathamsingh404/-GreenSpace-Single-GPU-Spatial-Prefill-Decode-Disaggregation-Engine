@@ -13,3 +13,6 @@ class TestGreenContext(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_l2_cache(self):
+        self.assertGreater(self.gpu_info["l2_cache_bytes"], 0)
