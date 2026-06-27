@@ -384,3 +384,5 @@ class CUDADriver:
 # Global singleton instance
 driver = CUDADriver()
 
+
+# Human readable error decoding
