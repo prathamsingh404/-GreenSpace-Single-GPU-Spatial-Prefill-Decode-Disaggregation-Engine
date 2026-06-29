@@ -388,3 +388,5 @@ driver = CUDADriver()
 # Human readable error decoding
 
 # Strengthen ctypes pointer verification
+
+# Cache device descriptor lookup
