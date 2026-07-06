@@ -17,3 +17,10 @@ class GreenStream:
                 self._torch_stream = torch.cuda.ExternalStream(raw_handle, device=device_id)
             except Exception:
                 pass
+
+class GreenContext:
+    def __init__(self, num_sms: int, device_id: int = 0):
+        self.num_sms = num_sms
+        self.device_id = device_id
+        self.green_ctx_handle = 0
+        self.cu_ctx_handle = 0
