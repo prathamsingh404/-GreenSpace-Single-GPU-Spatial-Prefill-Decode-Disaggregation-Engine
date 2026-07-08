@@ -24,3 +24,5 @@ class GreenContext:
         self.device_id = device_id
         self.green_ctx_handle = 0
         self.cu_ctx_handle = 0
+
+# Priority stream support
