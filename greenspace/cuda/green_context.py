@@ -28,3 +28,5 @@ class GreenContext:
 # Priority stream support
 
 # Dynamic workqueue concurrency throttling
+
+# Dynamic SM partition rebalancing
