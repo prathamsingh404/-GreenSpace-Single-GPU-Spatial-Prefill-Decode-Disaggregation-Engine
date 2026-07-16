@@ -30,3 +30,6 @@ class GreenContext:
 # Dynamic workqueue concurrency throttling
 
 # Dynamic SM partition rebalancing
+
+        if not torch.cuda.is_initialized():
+            torch.cuda.init()
