@@ -33,3 +33,5 @@ class GreenContext:
 
         if not torch.cuda.is_initialized():
             torch.cuda.init()
+
+# Ensure explicit device context setting per thread
