@@ -49,3 +49,5 @@ class TestGreenContext(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
+
+# SM partition validation tests
