@@ -53,3 +53,5 @@ if __name__ == "__main__":
 # SM partition validation tests
 
 # Stream tensor execution test
+
+# Workqueue limit clamping test
