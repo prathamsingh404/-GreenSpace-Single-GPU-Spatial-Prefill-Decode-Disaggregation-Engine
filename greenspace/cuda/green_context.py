@@ -190,3 +190,5 @@ class GreenContext:
         mode = "Hardware" if self.green_ctx_handle != 0 else "StreamIsolated"
         return f"<GreenContext mode={mode} sms={self.num_sms} wq_limit={self.workqueue_concurrency_limit}>"
 
+
+# Docstring updates on ExternalStream lifetime
