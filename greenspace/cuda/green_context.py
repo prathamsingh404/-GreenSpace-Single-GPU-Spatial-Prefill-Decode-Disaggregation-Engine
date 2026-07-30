@@ -192,3 +192,5 @@ class GreenContext:
 
 
 # Docstring updates on ExternalStream lifetime
+
+# Fast non-blocking event synchronization
