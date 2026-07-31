@@ -10,3 +10,7 @@ Prefill GEMM kernels saturate L2 read ports and interfere with Decode.
 ```
 cuDeviceGetDevResource -> cuDevResourceGenerateDesc -> cuGreenCtxCreate -> cuCtxFromGreenCtx
 ```
+
+## Green Context vs CUDA MPS Architectural Comparison
+
+Unlike MPS, Green Contexts require zero root daemons and allow dynamic in-process partition rebinding.
