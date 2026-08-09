@@ -110,3 +110,5 @@ class PagedKVCache:
 # Vectorized prompt write helper
 
 # Single token decode slot write
+
+# Zero copy block gathering
