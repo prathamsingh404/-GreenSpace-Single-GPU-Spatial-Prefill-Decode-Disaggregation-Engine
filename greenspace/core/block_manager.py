@@ -84,3 +84,5 @@ class BlockManager:
     def get_block_table(self, request_id: str) -> List[int]:
         with self._lock:
             return list(self._block_tables.get(request_id, []))
+
+# Free block reclamation
