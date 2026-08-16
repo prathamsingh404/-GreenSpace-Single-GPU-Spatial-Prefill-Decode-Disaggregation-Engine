@@ -86,3 +86,5 @@ class BlockManager:
             return list(self._block_tables.get(request_id, []))
 
 # Free block reclamation
+
+# Dynamic block expansion
