@@ -84,3 +84,5 @@ class EventCoordinator:
             return max(0.0, (request.decode_start_time - request.prefill_end_time) * 1000.0)
         return 0.0
 
+
+# Atomic state transition helpers
