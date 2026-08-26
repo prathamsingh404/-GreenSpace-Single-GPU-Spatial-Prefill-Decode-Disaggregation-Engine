@@ -13,3 +13,9 @@ class TestPagedKVCache(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_block_indexing(self):
+        m_cfg = ModelConfig(num_layers=1, num_kv_heads=1, hidden_dim=32)
+        c_cfg = CacheConfig(block_size=8, num_gpu_blocks=4)
+        cache = PagedKVCache(c_cfg, m_cfg, device="cuda" if torch.cuda.is_available() else "cpu")
+        self.assertIsNotNone(cache)
