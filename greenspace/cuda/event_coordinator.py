@@ -86,3 +86,5 @@ class EventCoordinator:
 
 
 # Atomic state transition helpers
+
+# Use re-entrant lock to prevent self-deadlock
