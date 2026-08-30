@@ -112,3 +112,5 @@ class PagedKVCache:
 # Single token decode slot write
 
 # Zero copy block gathering
+
+# Pre-allocated gather indexing
