@@ -14,3 +14,7 @@ cuDeviceGetDevResource -> cuDevResourceGenerateDesc -> cuGreenCtxCreate -> cuCtx
 ## Green Context vs CUDA MPS Architectural Comparison
 
 Unlike MPS, Green Contexts require zero root daemons and allow dynamic in-process partition rebinding.
+
+## Zero-Copy Pointer Flipping Architecture
+
+HBM allows cross-stream memory sharing with zero byte transfers.
