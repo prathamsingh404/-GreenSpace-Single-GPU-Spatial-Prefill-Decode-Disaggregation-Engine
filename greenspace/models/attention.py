@@ -120,3 +120,5 @@ class PagedAttention(nn.Module):
         attn_output = attn_output.transpose(0, 1).reshape(1, self.num_heads * self.head_dim)
         return self.out_proj(attn_output)
 
+
+# Specialized prefill forward pass
