@@ -122,3 +122,5 @@ class PagedAttention(nn.Module):
 
 
 # Specialized prefill forward pass
+
+# Specialized decode forward pass
