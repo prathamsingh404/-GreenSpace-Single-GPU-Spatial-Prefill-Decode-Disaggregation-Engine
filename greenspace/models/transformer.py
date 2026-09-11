@@ -158,3 +158,5 @@ class GreenSpaceTransformerModel(nn.Module):
         logits = self.lm_head(hidden_state)
         return logits
 
+
+# SwiGLU projection layers
