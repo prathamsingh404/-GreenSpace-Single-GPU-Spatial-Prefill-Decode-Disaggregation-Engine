@@ -160,3 +160,5 @@ class GreenSpaceTransformerModel(nn.Module):
 
 
 # SwiGLU projection layers
+
+# TransformerDecoderLayer assembly
