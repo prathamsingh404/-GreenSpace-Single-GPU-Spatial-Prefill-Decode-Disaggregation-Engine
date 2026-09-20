@@ -73,3 +73,5 @@ class DualQueueScheduler:
         with self._lock:
             return len(self._prefill_queue)
 
+
+# Atomic pointer handoff
