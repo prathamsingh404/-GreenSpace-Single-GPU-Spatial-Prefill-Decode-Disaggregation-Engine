@@ -18,3 +18,7 @@ Unlike MPS, Green Contexts require zero root daemons and allow dynamic in-proces
 ## Zero-Copy Pointer Flipping Architecture
 
 HBM allows cross-stream memory sharing with zero byte transfers.
+
+## Dual Queue Scheduling Logic
+
+Independent threads ingest prompts and generate tokens concurrently.
