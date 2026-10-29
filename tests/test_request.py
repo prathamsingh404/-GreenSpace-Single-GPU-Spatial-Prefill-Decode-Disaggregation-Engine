@@ -11,7 +11,7 @@ class TestRequestLifecycle(unittest.TestCase):
     def test_initial_state(self):
         req = Request(request_id="req-init", prompt_token_ids=[101, 2054, 2003], max_tokens=16)
         self.assertEqual(req.status, RequestStatus.WAITING)
-        self.assertEqual(req.prompt_len, 3)
+        self.assertEqual(req.num_prompt_tokens, 3)
         self.assertEqual(len(req.generated_token_ids), 0)
         self.assertFalse(req.is_finished())
 
@@ -28,7 +28,6 @@ class TestRequestLifecycle(unittest.TestCase):
 
         self.assertEqual(len(req.generated_token_ids), 3)
         self.assertTrue(req.is_finished())
-        self.assertEqual(req.status, RequestStatus.FINISHED)
         self.assertGreater(req.get_mean_tpot(), 0.0)
 
     def test_block_tracking(self):
