@@ -128,7 +128,3 @@ class ClosedLoopPIDController:
             "num_active_decodes": num_active_decodes,
         })
 
-
-# Dynamic WQ limit actuation
-
-# Elastic SM balance

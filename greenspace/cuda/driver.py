@@ -384,9 +384,3 @@ class CUDADriver:
 # Global singleton instance
 driver = CUDADriver()
 
-
-# Human readable error decoding
-
-# Strengthen ctypes pointer verification
-
-# Cache device descriptor lookup

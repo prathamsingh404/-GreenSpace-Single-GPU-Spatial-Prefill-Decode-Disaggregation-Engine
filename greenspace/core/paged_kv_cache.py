@@ -106,11 +106,3 @@ class PagedKVCache:
         """Returns total memory allocated for the KV cache pool in bytes."""
         return (self.key_cache.nelement() + self.val_cache.nelement()) * self.key_cache.element_size()
 
-
-# Vectorized prompt write helper
-
-# Single token decode slot write
-
-# Zero copy block gathering
-
-# Pre-allocated gather indexing

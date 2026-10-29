@@ -98,5 +98,3 @@ class EngineConfig:
     max_num_seqs: int = 64
     max_model_len: int = 8192
 
-
-# Hardware partition sanity validation helper

@@ -198,5 +198,3 @@ class GreenSpaceEngineCore:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
 
-
-# Pipeline warmup to eliminate cuBLAS jitter
