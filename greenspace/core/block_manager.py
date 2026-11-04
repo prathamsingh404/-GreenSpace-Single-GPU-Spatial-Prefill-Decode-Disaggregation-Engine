@@ -59,18 +59,21 @@ class BlockManager:
         Allocates a new block if the current block is full.
         """
         with self._lock:
-            total_tokens = request.total_tokens  # prompt + already generated
-            slot_idx = total_tokens % self.block_size
-            
-            # If starting a new block
-            if slot_idx == 0:
+            # Number of tokens already written to KV cache:
+            # Prompt tokens + all previous decode tokens (excluding the one about to be written)
+            cached_tokens = request.num_prompt_tokens + len(request.generated_token_ids) - 1
+            block_idx = cached_tokens // self.block_size
+            slot_idx = cached_tokens % self.block_size
+
+            # If we need a new block
+            if block_idx >= len(request.allocated_blocks):
                 if not self._free_blocks:
                     raise RuntimeError(f"Out of KV cache blocks during decode for request {request.request_id}")
                 new_block = self._free_blocks.pop()
                 request.allocated_blocks.append(new_block)
                 self._block_tables[request.request_id] = request.allocated_blocks
 
-            current_block = request.allocated_blocks[-1]
+            current_block = request.allocated_blocks[block_idx]
             return current_block, slot_idx
 
     def free(self, request: Request):
