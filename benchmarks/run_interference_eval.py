@@ -11,7 +11,7 @@ import logging
 import torch
 
 from greenspace.core.config import EngineConfig, GreenSpaceConfig, SLOConfig
-from greenspace.cuda.green_context import GreenContext
+from greenspace.hardware.green_context_pool import GreenContextLattice
 from greenspace.cuda.memory_barrier import GPUMemoryBarrier
 
 logging.basicConfig(level=logging.INFO)
@@ -22,17 +22,23 @@ def evaluate_memory_interference(device_id: int = 0):
     logger.info("Evaluating Memory Bandwidth Contention across SM Partitions...")
     torch.cuda.set_device(device_id)
 
-    # Allocate Prefill Green Context (12 SMs) and Decode Green Context (8 SMs)
-    prefill_ctx = GreenContext(num_sms=12, device_id=device_id, workqueue_concurrency_limit=8)
-    decode_ctx = GreenContext(num_sms=8, device_id=device_id, priority=-1)
-
-    s_prefill = prefill_ctx.Stream()
-    s_decode = decode_ctx.Stream()
+    # Both configurations use complementary groups from a single split.
+    initial = GreenContextLattice(device_id, ratios=(.4,), prefill_limit=8)
+    throttled = GreenContextLattice(device_id, ratios=(.4,), prefill_limit=2)
+    pair = initial.get_pair(.4)
+    reduced_pair = throttled.get_pair(.4)
+    if pair.prefill.configured_workqueue_limit == reduced_pair.prefill.configured_workqueue_limit:
+        initial.close()
+        throttled.close()
+        raise RuntimeError("Driver configured the same limit for both conditions")
+    s_prefill, s_decode = pair.prefill_stream, pair.decode_stream
 
     # Shared memory buffers
     buffer_size = 8 * 1024 * 1024  # 8M floats = 32 MB (matches GPU L2 cache size!)
     decode_buffer = torch.randn(buffer_size, dtype=torch.float16, device="cuda")
     prefill_matrix = torch.randn(2048, 2048, dtype=torch.float16, device="cuda")
+
+    torch.cuda.current_stream().synchronize()
 
     # 1. Baseline Decode Latency (No Prefill running)
     logger.info("Measuring isolated decode memory read latency (zero prefill contention)...")
@@ -67,7 +73,7 @@ def evaluate_memory_interference(device_id: int = 0):
 
     # 3. Decode Latency with GreenSpace Workqueue Throttling (Limit = 2)
     logger.info("Measuring decode latency with GreenSpace Workqueue Throttling active...")
-    prefill_ctx.set_workqueue_concurrency_limit(2)
+    s_prefill, s_decode = reduced_pair.prefill_stream, reduced_pair.decode_stream
     latencies_throttled = []
     for _ in range(50):
         with torch.cuda.stream(s_prefill.torch_stream):
@@ -90,8 +96,8 @@ def evaluate_memory_interference(device_id: int = 0):
     logger.info(f"GreenSpace Throttled Prefill:         {mean_throttled:.3f} ms (Contention overhead: +{(mean_throttled/mean_isolated - 1)*100:.1f}%)")
     logger.info("=" * 65)
 
-    prefill_ctx.close()
-    decode_ctx.close()
+    initial.close()
+    throttled.close()
 
 
 if __name__ == "__main__":
