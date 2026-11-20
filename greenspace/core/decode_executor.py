@@ -39,7 +39,8 @@ class DecodeExecutor:
         scheduler: DualQueueScheduler,
         decode_context: GreenContext,
         event_coordinator: EventCoordinator,
-        controller: Optional[ClosedLoopPIDController] = None
+        controller: Optional[ClosedLoopPIDController] = None,
+        stream: Optional[GreenStream] = None
     ):
         self.config = config
         self.model = model
@@ -51,7 +52,7 @@ class DecodeExecutor:
         self.controller = controller
 
         # Allocate dedicated Green Context stream for decode
-        self.stream: GreenStream = self.decode_context.Stream()
+        self.stream: GreenStream = stream or self.decode_context.Stream()
 
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -71,7 +72,7 @@ class DecodeExecutor:
     def stop(self):
         self._running = False
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
+            self._thread.join()
         logger.info("Decode Executor stopped.")
 
     def _run_loop(self):
@@ -107,40 +108,48 @@ class DecodeExecutor:
     def _step(self, batch: List[Request]):
         """Executes one autoregressive generation step for all requests in the active batch."""
         for request in batch:
-            # Step 1: Memory Barrier Check for requests arriving from Prefill
-            if request.status == RequestStatus.READ_ONLY_READY:
-                # Non-blocking GPU-side wait on prefill completion event
-                self.event_coordinator.acquire_for_decode(request, self.stream)
-
-            # Step 2: Allocate slot in PagedKVCache for the next token
-            target_block_id, target_slot_idx = self.block_manager.append_slot_for_decode(request)
-
-            # Step 3: Single-token forward pass on Decode Green Context
-            last_token = request.generated_token_ids[-1]
-            total_tokens = request.total_tokens
-
-            with torch.cuda.stream(self.stream.torch_stream):
-                logits = self.model.forward_decode(
-                    token_id=last_token,
-                    block_ids=request.allocated_blocks,
-                    total_tokens=total_tokens,
-                    target_block_id=target_block_id,
-                    target_slot_idx=target_slot_idx,
-                    kv_cache=self.kv_cache
-                )
-                # Greedy/argmax sampling
-                next_token = int(torch.argmax(logits, dim=-1).item())
-
-            # Synchronize host to measure precise per-token completion time
-            self.stream.synchronize()
-
-            request.record_generated_token(next_token)
-            self.total_tokens_generated += 1
-
-            # Step 4: Completion check
-            if request.is_finished():
-                request.finish_time = time.perf_counter()
+            try:
+                self._decode_one(request)
+            except Exception as error:
+                self.stream.synchronize()
                 self.event_coordinator.release_request(request)
                 self.block_manager.free(request)
-                self.scheduler.mark_finished(request)
+                self.scheduler.mark_finished(request, error)
+                logger.exception("Decode failed for request %s", request.request_id)
+
+    @torch.inference_mode()
+    def _decode_one(self, request: Request):
+        # Step 1: Memory Barrier Check for requests arriving from Prefill
+        if request.status == RequestStatus.READ_ONLY_READY:
+            # Non-blocking GPU-side wait on prefill completion event
+            self.event_coordinator.acquire_for_decode(request, self.stream)
+
+        # Step 2: Allocate slot in PagedKVCache for the next token
+        target_block_id, target_slot_idx = self.block_manager.append_slot_for_decode(request)
+
+        # Step 3: Single-token forward pass on Decode Green Context
+        last_token = request.generated_token_ids[-1]
+        total_tokens = request.total_tokens
+
+        with torch.cuda.stream(self.stream.torch_stream):
+            logits = self.model.forward_decode(
+                token_id=last_token,
+                block_ids=request.allocated_blocks,
+                total_tokens=total_tokens,
+                target_block_id=target_block_id,
+                target_slot_idx=target_slot_idx,
+                kv_cache=self.kv_cache
+            )
+            # Greedy/argmax sampling
+            next_token = int(torch.argmax(logits, dim=-1).item())
+
+        request.record_generated_token(next_token)
+        self.total_tokens_generated += 1
+
+        # Step 4: Completion check
+        if request.is_finished():
+            request.finish_time = time.perf_counter()
+            self.event_coordinator.release_request(request)
+            self.block_manager.free(request)
+            self.scheduler.mark_finished(request)
 
