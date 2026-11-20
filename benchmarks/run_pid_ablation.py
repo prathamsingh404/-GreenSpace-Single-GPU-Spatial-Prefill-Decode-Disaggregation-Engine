@@ -4,7 +4,7 @@ Configurations tested:
   1. Baseline Monolithic (No spatial partition, single thread)
   2. Dual-Thread Multi-Stream (Independent streams, but shared monolithic SMs)
   3. Green Context Hardware Slicing (Spatial SM isolation, fixed workqueues)
-  4. Full GreenSpace (Spatial SM isolation + Closed-Loop PID Bandwidth Controller)
+  4. Static partition with controller observations
 """
 
 import os
@@ -92,7 +92,7 @@ def run_ablation():
     del eng3
 
     # Config 4: Full GreenSpace Engine (Green Context + PID Bandwidth Throttling)
-    logger.info("[4/4] Running Full GreenSpace (Green Context + PID Bandwidth Control)...")
+    logger.info("[4/4] Running fixed partitions with controller observations...")
     cfg4 = EngineConfig()
     cfg4.greenspace.enable_green_contexts = True
     cfg4.greenspace.enable_dynamic_rebinding = True
