@@ -103,6 +103,7 @@ def plot_tpot_timeline(
     ax.legend(loc='upper right', frameon=True, fancybox=True, shadow=True)
 
     plt.tight_layout()
+    plt.gcf().text(0.99, 0.005, "Illustrative synthetic data", ha="right", fontsize=9)
     plt.savefig(output_path)
     plt.close()
     print(f"Saved: {output_path}")
@@ -159,6 +160,7 @@ def plot_tpot_distribution(
     )
 
     plt.tight_layout()
+    plt.gcf().text(0.99, 0.005, "Illustrative synthetic data", ha="right", fontsize=9)
     plt.savefig(output_path)
     plt.close()
     print(f"Saved: {output_path}")
@@ -204,6 +206,7 @@ def plot_pid_controller_dynamics(
     ax1.legend(lines, labels, loc='upper right', frameon=True)
 
     plt.tight_layout()
+    plt.gcf().text(0.99, 0.005, "Illustrative synthetic data", ha="right", fontsize=9)
     plt.savefig(output_path)
     plt.close()
     print(f"Saved: {output_path}")
