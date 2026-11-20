@@ -18,6 +18,7 @@ from greenspace.models.transformer import GreenSpaceTransformerModel
 from greenspace.scheduler.dual_scheduler import DualQueueScheduler
 from greenspace.cuda.driver import driver
 from greenspace.cuda.green_context import GreenContext
+from greenspace.hardware.green_context_pool import GreenContextLattice
 from greenspace.cuda.event_coordinator import EventCoordinator
 from greenspace.core.controller import ClosedLoopPIDController
 from greenspace.core.prefill_executor import PrefillExecutor
@@ -39,33 +40,29 @@ class GreenSpaceEngineCore:
         # 1. Discover GPU hardware topology and SM count
         self.gpu_info = driver.get_device_info(self.device_id)
         self.total_sms = self.gpu_info["sm_count"]
+        gs = self.config.greenspace
         self.alignment = self.gpu_info["sm_coscheduled_alignment"]
-        
-        self.prefill_sms, self.decode_sms = self.config.greenspace.get_sm_counts(
-            total_sms=self.total_sms,
-            alignment=self.alignment
-        )
-        logger.info(
-            f"Initializing Project GreenSpace on {self.gpu_info['name']} "
-            f"({self.total_sms} SMs total). Slicing: {self.prefill_sms} SMs (Prefill Zone) / "
-            f"{self.decode_sms} SMs (Decode Zone)."
-        )
-
-        # 2. Initialize Hardware Green Contexts
-        self.prefill_context = GreenContext(
-            num_sms=self.prefill_sms,
-            device_id=self.device_id,
-            workqueue_concurrency_limit=self.config.greenspace.workqueue_concurrency_limit_prefill,
-            priority=self.config.greenspace.stream_priority_prefill,
-            enable_hardware_isolation=self.config.greenspace.enable_green_contexts
-        )
-        self.decode_context = GreenContext(
-            num_sms=self.decode_sms,
-            device_id=self.device_id,
-            workqueue_concurrency_limit=self.config.greenspace.workqueue_concurrency_limit_decode,
-            priority=self.config.greenspace.stream_priority_decode,
-            enable_hardware_isolation=self.config.greenspace.enable_green_contexts
-        )
+        self.lattice = None
+        p_stream = d_stream = None
+        if gs.enable_green_contexts:
+            if not (0 < gs.sm_partition_prefill < 1 and 0 < gs.sm_partition_decode < 1
+                    and abs(gs.sm_partition_prefill + gs.sm_partition_decode - 1) < 1e-6):
+                raise ValueError("Prefill and decode SM shares must be positive and sum to one")
+            self.lattice = GreenContextLattice(
+                self.device_id, ratios=(.2, .3, .4, .5, .6, gs.sm_partition_decode),
+                prefill_limit=gs.workqueue_concurrency_limit_prefill,
+                decode_limit=gs.workqueue_concurrency_limit_decode,
+                prefill_priority=gs.stream_priority_prefill, decode_priority=gs.stream_priority_decode)
+            pair = self.lattice.get_pair(gs.sm_partition_decode)
+            self.prefill_context, self.decode_context = pair.prefill, pair.decode
+            p_stream, d_stream = pair.prefill_stream, pair.decode_stream
+        else:
+            self.prefill_context = GreenContext(self.total_sms, self.device_id,
+                priority=gs.stream_priority_prefill, enable_hardware_isolation=False)
+            self.decode_context = GreenContext(self.total_sms, self.device_id,
+                priority=gs.stream_priority_decode, enable_hardware_isolation=False)
+        self.prefill_sms = self.prefill_context.num_sms
+        self.decode_sms = self.decode_context.num_sms
 
         # 3. Initialize Shared GPU HBM Paged KV Cache and Block Manager
         self.kv_cache = PagedKVCache(self.config.model, self.config.cache, device=f"cuda:{self.device_id}")
@@ -96,7 +93,7 @@ class GreenSpaceEngineCore:
             scheduler=self.scheduler,
             prefill_context=self.prefill_context,
             event_coordinator=self.event_coordinator,
-            controller=self.controller
+            controller=self.controller, stream=p_stream
         )
         self.decode_executor = DecodeExecutor(
             config=self.config,
@@ -106,12 +103,17 @@ class GreenSpaceEngineCore:
             scheduler=self.scheduler,
             decode_context=self.decode_context,
             event_coordinator=self.event_coordinator,
-            controller=self.controller
+            controller=self.controller, stream=d_stream
         )
 
         self._is_started = False
+        self._closed = False
+        init_stream = torch.cuda.current_stream(self.device_id)
+        self.prefill_executor.stream.torch_stream.wait_stream(init_stream)
+        self.decode_executor.stream.torch_stream.wait_stream(init_stream)
         self.warmup()
 
+    @torch.inference_mode()
     def warmup(self):
         """Pre-warms cuBLAS, CUDA kernels, and memory pools to eliminate cold-start jitter."""
         logger.info("Warming up GreenSpace execution pipelines...")
@@ -132,13 +134,13 @@ class GreenSpaceEngineCore:
                     kv_cache=self.kv_cache
                 )
             self.decode_executor.stream.synchronize()
+        finally:
             self.block_manager.free(warmup_req)
-            logger.info("GreenSpace warmup complete.")
-        except Exception as e:
-            logger.warning(f"Warmup notice: {e}")
 
     def start(self):
         """Launches the dual concurrent CPU execution loops."""
+        if self._closed:
+            raise RuntimeError("Engine has been closed")
         if not self._is_started:
             self.prefill_executor.start()
             self.decode_executor.start()
@@ -150,10 +152,17 @@ class GreenSpaceEngineCore:
         if self._is_started:
             self.prefill_executor.stop()
             self.decode_executor.stop()
+        for request in self.scheduler.drain():
+            self.event_coordinator.release_request(request)
+            self.block_manager.free(request)
+            self.scheduler.mark_finished(request, RuntimeError("Engine stopped before completion"))
+        if self.lattice is not None:
+            self.lattice.close()
+        else:
             self.prefill_context.close()
             self.decode_context.close()
-            self._is_started = False
-            logger.info("Project GreenSpace EngineCore stopped.")
+        self._closed = True
+        self._is_started = False
 
     def add_request(
         self,
@@ -162,18 +171,21 @@ class GreenSpaceEngineCore:
         request_id: Optional[str] = None
     ) -> Request:
         """Submits a new inference request to the Prefill queue."""
-        req_id = request_id or str(uuid.uuid4())[:8]
+        if self._closed:
+            raise RuntimeError("Engine has been closed")
+        if len(prompt_token_ids) + max_tokens - 1 > self.config.max_model_len:
+            raise ValueError("Request exceeds max_model_len")
+        if any(token < 0 or token >= self.config.model.vocab_size for token in prompt_token_ids):
+            raise ValueError("Prompt token ID is outside the model vocabulary")
+        req_id = request_id or str(uuid.uuid4())
         req = Request(request_id=req_id, prompt_token_ids=prompt_token_ids, max_tokens=max_tokens)
         self.scheduler.add_request(req)
         return req
 
     def get_telemetry(self) -> Dict[str, Any]:
         """Returns comprehensive system telemetry and latency statistics."""
-        step_latencies = self.decode_executor.step_latencies
-        rolling_tpot = (
-            sum(self.decode_executor._recent_tpots) / len(self.decode_executor._recent_tpots)
-            if self.decode_executor._recent_tpots else 0.0
-        )
+        samples = list(self.decode_executor._recent_tpots)
+        rolling_tpot = sum(samples) / len(samples) if samples else 0.0
         return {
             "gpu_name": self.gpu_info["name"],
             "total_sms": self.total_sms,
@@ -183,8 +195,11 @@ class GreenSpaceEngineCore:
             "tokens_generated": self.decode_executor.total_tokens_generated,
             "current_rolling_tpot_ms": rolling_tpot,
             "target_tpot_ms": self.config.slo.target_tpot_ms,
+            "hardware_isolation": self.prefill_context.green_ctx_handle is not None,
+            "configured_prefill_workqueue_limit": self.prefill_context.configured_workqueue_limit,
             "current_workqueue_limit": self.controller.current_wq_limit,
-            "is_elastic_full_sm": self.controller.is_elastic_full_sm,
+            "requested_full_sm": self.controller.is_elastic_full_sm,
+            "is_elastic_full_sm": self.lattice is None,
             "active_decodes": self.scheduler.num_active_decodes,
             "pending_prefills": self.scheduler.num_pending_prefills,
             "free_kv_blocks": self.block_manager.num_free_blocks,
