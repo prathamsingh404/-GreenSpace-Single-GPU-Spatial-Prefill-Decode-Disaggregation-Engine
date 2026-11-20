@@ -14,6 +14,7 @@ class RequestStatus(Enum):
     PREFILLING = "PREFILLING"
     READ_ONLY_READY = "READ_ONLY_READY"  # Zero-copy handoff point: KV cache written, event recorded
     DECODING = "DECODING"
+    FAILED = "FAILED"
     FINISHED = "FINISHED"
 
 
@@ -35,6 +36,9 @@ class Request:
         sampling_params: Optional[SamplingParams] = None,
         arrival_time: Optional[float] = None
     ):
+        if not prompt_token_ids or max_tokens < 1:
+            raise ValueError("A nonempty prompt and positive max_tokens are required")
+        self.error: Optional[str] = None
         self.request_id = request_id
         self.prompt_token_ids = list(prompt_token_ids)
         self.max_tokens = max_tokens
@@ -45,7 +49,7 @@ class Request:
         self.generated_token_ids: List[int] = []
         
         # Timing telemetry
-        self.arrival_time = arrival_time or time.perf_counter()
+        self.arrival_time = time.perf_counter() if arrival_time is None else arrival_time
         self.prefill_start_time: Optional[float] = None
         self.prefill_end_time: Optional[float] = None
         self.decode_start_time: Optional[float] = None
@@ -75,6 +79,8 @@ class Request:
         self.token_timestamps.append(now)
 
     def is_finished(self) -> bool:
+        if self.status in (RequestStatus.FINISHED, RequestStatus.FAILED):
+            return True
         if len(self.generated_token_ids) >= self.max_tokens:
             return True
         if self.sampling_params.stop_tokens and self.generated_token_ids:
