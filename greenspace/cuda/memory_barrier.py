@@ -40,10 +40,12 @@ class GPUMemoryBarrier:
         bit-exact coherence with zero CPU synchronization in the middle.
         Returns (is_coherent, barrier_latency_us).
         """
-        # Allocate shared HBM buffer
-        buffer = torch.zeros(tensor_size, dtype=torch.int32, device='cuda')
-        pattern = torch.randint(1, 1000000, (tensor_size,), dtype=torch.int32, device='cuda')
-        result = torch.zeros(tensor_size, dtype=torch.int32, device='cuda')
+        if producer_stream.device != consumer_stream.device:
+            raise ValueError("Coherence verification requires two streams on the same GPU")
+        with torch.cuda.stream(producer_stream):
+            buffer = torch.empty(tensor_size, dtype=torch.int32, device=producer_stream.device)
+            pattern = torch.randint(1, 1000000, (tensor_size,), dtype=torch.int32, device=producer_stream.device)
+            result = torch.empty_like(buffer)
 
         start_event = torch.cuda.Event(enable_timing=True)
         end_event = torch.cuda.Event(enable_timing=True)
