@@ -11,6 +11,7 @@ import os
 import json
 import time
 import logging
+import torch
 from typing import Dict, Any
 
 from greenspace.core.config import EngineConfig, GreenSpaceConfig, SLOConfig
@@ -29,30 +30,35 @@ def run_ablation():
     # Config 1: Monolithic Baseline
     logger.info("[1/4] Running Monolithic Baseline...")
     cfg1 = EngineConfig()
+    torch.manual_seed(0)
     eng1 = MonolithicEngine(cfg1)
     # Warmup
     eng1.add_request([1, 2], max_tokens=2)
     eng1.step()
     # Benchmark
+    t0 = time.perf_counter()
     r1 = eng1.add_request([10] * 512, max_tokens=15)
     r2 = eng1.add_request([20] * 16, max_tokens=15)
     for _ in range(30):
         eng1.step()
         if r1.is_finished() and r2.is_finished():
             break
-    rep1 = MetricsTracker.analyze_requests([r1, r2], wall_clock_seconds=1.0)
+    rep1 = MetricsTracker.analyze_requests([r1, r2], wall_clock_seconds=time.perf_counter() - t0)
     results["1_monolithic_baseline"] = rep1.to_dict()
+
+    del eng1
 
     # Config 2: Dual Stream without Green Context (Fallback Mode)
     logger.info("[2/4] Running Dual-Stream without Hardware SM Isolation...")
     cfg2 = EngineConfig()
     cfg2.greenspace.enable_green_contexts = False
     cfg2.greenspace.enable_dynamic_rebinding = False
+    torch.manual_seed(0)
     eng2 = GreenSpaceEngineCore(cfg2)
     eng2.start()
+    t0 = time.perf_counter()
     r1 = eng2.add_request([10] * 512, max_tokens=15)
     r2 = eng2.add_request([20] * 16, max_tokens=15)
-    t0 = time.perf_counter()
     while time.perf_counter() - t0 < 10.0:
         if r1.is_finished() and r2.is_finished():
             break
@@ -61,17 +67,20 @@ def run_ablation():
     eng2.stop()
     results["2_dual_stream_unpartitioned"] = rep2.to_dict()
 
+    del eng2
+
     # Config 3: Green Context Hardware SM Partitioning (No PID)
     logger.info("[3/4] Running Green Context Spatial Isolation without PID...")
     cfg3 = EngineConfig()
     cfg3.greenspace.enable_green_contexts = True
     cfg3.greenspace.enable_dynamic_rebinding = False
+    torch.manual_seed(0)
     eng3 = GreenSpaceEngineCore(cfg3)
-    eng3.controller = None  # Disable PID controller updates
+    eng3.decode_executor.controller = None
     eng3.start()
+    t0 = time.perf_counter()
     r1 = eng3.add_request([10] * 512, max_tokens=15)
     r2 = eng3.add_request([20] * 16, max_tokens=15)
-    t0 = time.perf_counter()
     while time.perf_counter() - t0 < 10.0:
         if r1.is_finished() and r2.is_finished():
             break
@@ -80,23 +89,26 @@ def run_ablation():
     eng3.stop()
     results["3_green_context_only"] = rep3.to_dict()
 
+    del eng3
+
     # Config 4: Full GreenSpace Engine (Green Context + PID Bandwidth Throttling)
     logger.info("[4/4] Running Full GreenSpace (Green Context + PID Bandwidth Control)...")
     cfg4 = EngineConfig()
     cfg4.greenspace.enable_green_contexts = True
     cfg4.greenspace.enable_dynamic_rebinding = True
+    torch.manual_seed(0)
     eng4 = GreenSpaceEngineCore(cfg4)
     eng4.start()
+    t0 = time.perf_counter()
     r1 = eng4.add_request([10] * 512, max_tokens=15)
     r2 = eng4.add_request([20] * 16, max_tokens=15)
-    t0 = time.perf_counter()
     while time.perf_counter() - t0 < 10.0:
         if r1.is_finished() and r2.is_finished():
             break
         time.sleep(0.05)
     rep4 = MetricsTracker.analyze_requests([r1, r2], wall_clock_seconds=time.perf_counter() - t0)
     eng4.stop()
-    results["4_full_greenspace"] = rep4.to_dict()
+    results["4_static_partition_controller_observation"] = rep4.to_dict()
 
     logger.info("=" * 70)
     logger.info("ABLATION STUDY SUMMARY (P99 TPOT & JITTER COMPARISON):")
