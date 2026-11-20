@@ -1,192 +1,110 @@
-"""
-High-Level GreenContext and GreenStream abstractions for PyTorch.
-Provides spatial hardware SM partitioning, workqueue concurrency throttling,
-and direct interoperability with PyTorch CUDA streams.
-"""
+"""PyTorch stream views over explicitly owned CUDA Green Context streams."""
 
-import logging
-from typing import Optional, ContextManager
-from contextlib import contextmanager
+from typing import Optional
+
 import torch
+from cuda.bindings import driver as cu
 
-from greenspace.cuda.driver import driver, CUDA_SUCCESS
-
-logger = logging.getLogger("GreenSpace.CUDA")
+from greenspace.cuda.driver import checked, driver
 
 
 class GreenStream:
-    """
-    High-performance wrapper around a CUDA Stream bound to a Green Context partition.
-    Interoperates seamlessly with PyTorch's stream execution context.
-    """
-    def __init__(
-        self,
-        raw_stream_handle: int,
-        device_id: int = 0,
-        parent_context: Optional["GreenContext"] = None
-    ):
+    def __init__(self, raw_stream_handle: int, device_id: int = 0,
+                 parent_context: Optional["GreenContext"] = None):
         self.raw_handle = raw_stream_handle
         self.device_id = device_id
         self.parent_context = parent_context
-        
-        # Wrap raw CUDA stream pointer with PyTorch ExternalStream
-        if raw_stream_handle:
-            self._torch_stream = torch.cuda.ExternalStream(raw_stream_handle, device=device_id)
-        else:
-            self._torch_stream = torch.cuda.Stream(device=device_id)
+        self._torch_stream = torch.cuda.ExternalStream(raw_stream_handle, device=device_id)
 
     @property
     def torch_stream(self) -> torch.cuda.Stream:
+        if self.parent_context is not None and self.parent_context.closed:
+            raise RuntimeError("The stream's Green Context is closed")
         return self._torch_stream
 
     @property
     def cuda_stream(self) -> int:
-        return self.raw_handle
+        return self.torch_stream.cuda_stream
 
     def synchronize(self):
-        """Blocks CPU until all scheduled operations on this stream have completed."""
-        self._torch_stream.synchronize()
+        self.torch_stream.synchronize()
 
     def wait_event(self, event: torch.cuda.Event):
-        """Makes this stream wait asynchronously on a CUDA event."""
-        self._torch_stream.wait_event(event)
+        self.torch_stream.wait_event(event)
 
     def record_event(self, event: Optional[torch.cuda.Event] = None) -> torch.cuda.Event:
-        """Records a CUDA event on this stream."""
-        if event is None:
-            event = torch.cuda.Event(enable_timing=True)
-        event.record(self._torch_stream)
-        return event
+        return self.torch_stream.record_event(event)
 
     def __enter__(self):
-        return self._torch_stream.__enter__()
+        self._guard = torch.cuda.stream(self.torch_stream)
+        return self._guard.__enter__()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        return self._torch_stream.__exit__(exc_type, exc_val, exc_tb)
-
-    def __repr__(self) -> str:
-        return f"<GreenStream device={self.device_id} handle=0x{self.raw_handle:x}>"
+        return self._guard.__exit__(exc_type, exc_val, exc_tb)
 
 
 class GreenContext:
-    """
-    Represents an isolated spatial GPU partition (Green Context) reserving a specific
-    subset of Streaming Multiprocessors (SMs) and configured with hardware workqueue limits.
-    """
-    def __init__(
-        self,
-        num_sms: int,
-        device_id: int = 0,
-        workqueue_concurrency_limit: Optional[int] = None,
-        priority: int = 0,
-        enable_hardware_isolation: bool = True
-    ):
-        self.num_sms = num_sms
-        self.device_id = device_id
-        self.workqueue_concurrency_limit = workqueue_concurrency_limit
-        self.priority = priority
-        self.enable_hardware_isolation = enable_hardware_isolation
-        
-        self.green_ctx_handle: int = 0
-        self.cu_ctx_handle: int = 0
+    """Own one driver resource. Paired users must use the same split operation."""
+
+    def __init__(self, num_sms: int, device_id: int = 0,
+                 workqueue_concurrency_limit: int | None = None, priority: int = 0,
+                 enable_hardware_isolation: bool = True, *, resource=None):
+        self.closed = False
+        self.green_ctx_handle = None
         self._streams = []
-        self._is_closed = False
-
-        # Ensure PyTorch CUDA primary context is fully initialized
-        if not torch.cuda.is_initialized():
+        self.device_id = device_id
+        self.priority = priority
+        self.workqueue_concurrency_limit = workqueue_concurrency_limit
+        self.configured_workqueue_limit = None
+        with torch.cuda.device(device_id):
             torch.cuda.init()
-
-        self._init_hardware_context()
-
-    def _init_hardware_context(self):
-        """Initializes low-level Green Context or fallback stream."""
-        if self.enable_hardware_isolation and driver.has_green_ctx:
-            try:
-                self.green_ctx_handle, self.cu_ctx_handle = driver.create_green_context(
-                    sm_count=self.num_sms,
-                    workqueue_concurrency_limit=self.workqueue_concurrency_limit,
-                    device_id=self.device_id
-                )
-                logger.info(
-                    f"Initialized Native Hardware GreenContext: {self.num_sms} SMs on device {self.device_id} "
-                    f"(hGreenCtx=0x{self.green_ctx_handle:x}, hCtx=0x{self.cu_ctx_handle:x})"
-                )
-                return
-            except Exception as e:
-                logger.warning(
-                    f"Native Green Context creation failed ({e}); falling back to priority stream isolation."
-                )
-
-        # Fallback path if hardware context creation not permitted
-        self.green_ctx_handle = 0
-        self.cu_ctx_handle = 0
+            if enable_hardware_isolation:
+                if resource is None:
+                    resource = driver.sm_resource(device_id)
+                    if num_sms != resource.sm.smCount:
+                        _, resource = driver.split(device_id, num_sms)
+                self.num_sms = resource.sm.smCount
+                self.green_ctx_handle, self.configured_workqueue_limit = driver.create_green_context(
+                    resource, device_id, workqueue_concurrency_limit)
+            else:
+                self.num_sms = torch.cuda.get_device_properties(device_id).multi_processor_count
 
     def Stream(self) -> GreenStream:
-        """Creates a new CUDA stream bound to this Green Context's hardware partition."""
-        if self._is_closed:
-            raise RuntimeError("Cannot allocate stream from closed GreenContext.")
-
-        if self.cu_ctx_handle != 0:
-            raw_stream = driver.create_stream_in_context(self.cu_ctx_handle, priority=self.priority)
-        else:
-            # Fallback stream with specified priority
-            torch_s = torch.cuda.Stream(device=self.device_id, priority=self.priority)
-            raw_stream = torch_s.cuda_stream
-
-        stream = GreenStream(raw_stream, device_id=self.device_id, parent_context=self)
-        self._streams.append(stream)
-        return stream
+        if self.closed:
+            raise RuntimeError("Cannot allocate a stream from a closed context")
+        if self.green_ctx_handle is None:
+            stream = torch.cuda.Stream(device=self.device_id, priority=self.priority)
+            self._streams.append(stream)
+            return GreenStream(stream.cuda_stream, self.device_id, self)
+        handle = checked(cu.cuGreenCtxStreamCreate, self.green_ctx_handle,
+                         int(cu.CUstream_flags.CU_STREAM_NON_BLOCKING), self.priority)
+        self._streams.append(handle)
+        return GreenStream(int(handle), self.device_id, self)
 
     def set_workqueue_concurrency_limit(self, limit: int):
-        """
-        Dynamically adjusts the workqueue concurrency limit to throttle kernel launch
-        rates and prevent shared memory bus / L2 cache saturation.
-        """
+        """Record a controller request. Hardware configuration is fixed at creation."""
         self.workqueue_concurrency_limit = max(1, limit)
-        logger.debug(f"Adjusted GreenContext workqueue concurrency limit to {self.workqueue_concurrency_limit}")
 
     def rebind_sm_partition(self, new_num_sms: int):
-        """
-        Elastic SM rebalancing: Re-allocates SM resources (e.g. reclamation when decode queue is empty).
-        """
-        if new_num_sms == self.num_sms:
-            return
-
-        logger.info(f"Rebinding GreenContext SM partition from {self.num_sms} -> {new_num_sms} SMs")
-        self.num_sms = new_num_sms
-        # Re-initialize context if hardware isolation is active
-        if self.cu_ctx_handle != 0:
-            try:
-                driver.destroy_green_context(self.green_ctx_handle)
-            except Exception:
-                pass
-            self._init_hardware_context()
+        if new_num_sms != self.num_sms:
+            raise RuntimeError("Select a pre-provisioned context pair at a synchronized phase boundary")
 
     def close(self):
-        """Releases all allocated hardware resources."""
-        if self._is_closed:
+        if self.closed:
             return
-        self._is_closed = True
-        for s in self._streams:
-            try:
-                if self.cu_ctx_handle != 0:
-                    driver.destroy_stream(s.raw_handle)
-            except Exception:
-                pass
-        self._streams.clear()
-
-        if self.green_ctx_handle != 0:
-            try:
-                driver.destroy_green_context(self.green_ctx_handle)
-            except Exception:
-                pass
-            self.green_ctx_handle = 0
-            self.cu_ctx_handle = 0
+        while self._streams:
+            stream = self._streams[-1]
+            if self.green_ctx_handle is not None:
+                checked(cu.cuStreamSynchronize, stream)
+                checked(cu.cuStreamDestroy, stream)
+            else:
+                stream.synchronize()
+            self._streams.pop()
+        if self.green_ctx_handle is not None:
+            checked(cu.cuGreenCtxDestroy, self.green_ctx_handle)
+            self.green_ctx_handle = None
+        self.closed = True
 
     def __del__(self):
-        self.close()
-
-    def __repr__(self) -> str:
-        mode = "Hardware" if self.green_ctx_handle != 0 else "StreamIsolated"
-        return f"<GreenContext mode={mode} sms={self.num_sms} wq_limit={self.workqueue_concurrency_limit}>"
-
+        if getattr(self, "green_ctx_handle", None) is not None:
+            self.close()
