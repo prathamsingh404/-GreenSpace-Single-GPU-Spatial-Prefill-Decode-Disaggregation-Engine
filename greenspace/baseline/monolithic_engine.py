@@ -35,7 +35,7 @@ class MonolithicEngine:
         self.model = GreenSpaceTransformerModel(self.config.model, device=self.device)
 
         # Monolithic default stream (no green context isolation)
-        self.stream = torch.cuda.default_stream()
+        self.stream = torch.cuda.default_stream(self.device)
 
         self.waiting_queue: deque[Request] = deque()
         self.active_decode_pool: List[Request] = []
@@ -55,6 +55,7 @@ class MonolithicEngine:
         self.waiting_queue.append(req)
         return req
 
+    @torch.inference_mode()
     def step(self):
         """
         Single monolithic execution step.
@@ -84,8 +85,14 @@ class MonolithicEngine:
             self.stream.synchronize()
             req.prefill_end_time = time.perf_counter()
             req.record_generated_token(first_token)
-            req.status = RequestStatus.DECODING
-            self.active_decode_pool.append(req)
+            if req.is_finished():
+                self.block_manager.free(req)
+                req.status = RequestStatus.FINISHED
+                req.finish_time = time.perf_counter()
+                self.finished_requests.append(req)
+            else:
+                req.status = RequestStatus.DECODING
+                self.active_decode_pool.append(req)
 
         # Process active decodes
         if self.active_decode_pool:
@@ -108,6 +115,7 @@ class MonolithicEngine:
                 req.record_generated_token(next_token)
 
                 if req.is_finished():
+                    req.status = RequestStatus.FINISHED
                     req.finish_time = time.perf_counter()
                     self.block_manager.free(req)
                     self.active_decode_pool.remove(req)
