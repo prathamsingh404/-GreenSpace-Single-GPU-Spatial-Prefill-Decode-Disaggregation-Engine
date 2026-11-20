@@ -53,6 +53,8 @@ class MetricsTracker:
         total_tokens = 0
 
         for req in requests:
+            if req.error or not req.is_finished():
+                raise ValueError(f"Incomplete benchmark request {req.request_id}: {req.error or req.status.name}")
             series = req.get_tpot_series()
             all_tpots.extend(series)
             all_ttfts.append(req.get_ttft())
