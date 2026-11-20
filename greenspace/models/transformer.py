@@ -94,6 +94,8 @@ class GreenSpaceTransformerModel(nn.Module):
     def __init__(self, config: ModelConfig, device: str = "cuda"):
         super().__init__()
         self.config = config
+        if not config.use_synthetic_weights:
+            raise ValueError("Pretrained model weight loading is not implemented")
         self.device = device
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, dtype=config.dtype)
