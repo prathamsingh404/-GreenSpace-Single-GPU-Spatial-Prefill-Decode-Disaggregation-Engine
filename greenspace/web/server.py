@@ -9,6 +9,7 @@ import sys
 import time
 import json
 import asyncio
+from contextlib import asynccontextmanager, suppress
 import logging
 import threading
 from typing import List, Dict, Any, Optional
@@ -19,7 +20,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from greenspace.core.config import EngineConfig, GreenSpaceConfig, SLOConfig
 from greenspace.core.engine import GreenSpaceEngineCore
@@ -30,7 +31,24 @@ from greenspace.cuda.memory_barrier import GPUMemoryBarrier
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("GreenSpace.WebServer")
 
+@asynccontextmanager
+async def lifespan(app):
+    state._init_engines()
+    task = asyncio.create_task(telemetry_broadcaster_task())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
+        if state.greenspace_engine:
+            state.greenspace_engine.stop()
+        state.greenspace_engine = None
+        state.monolithic_engine = None
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="Project GreenSpace - Spatial Prefill-Decode Disaggregation Engine",
     description="Web Control Center & Live Hardware Telemetry",
     version="1.0.0"
@@ -54,7 +72,7 @@ class EngineState:
         # Instantiate Engines
         self.greenspace_engine: Optional[GreenSpaceEngineCore] = None
         self.monolithic_engine: Optional[MonolithicEngine] = None
-        self._init_engines()
+        self.baseline_lock = threading.Lock()
 
         # Telemetry history buffer for charts
         self.history_len = 120
@@ -110,8 +128,8 @@ state = EngineState()
 # Request Pydantic Schemas
 class PromptRequest(BaseModel):
     prompt: str
-    max_tokens: int = 30
-    prompt_len: Optional[int] = None
+    max_tokens: int = Field(default=30, ge=1, le=8192)
+    prompt_len: Optional[int] = Field(default=None, ge=1, le=8192)
 
 class BurstRequest(BaseModel):
     prompt_len: int = 1024
@@ -136,6 +154,7 @@ async def get_status():
     with state.lock:
         return {
             "mode": state.mode,
+            "telemetry_source": "simulation",
             "gpu": {
                 "name": gpu_info["name"],
                 "sm_count": gpu_info["sm_count"],
@@ -145,10 +164,10 @@ async def get_status():
                 "has_green_ctx": gpu_info["has_green_context_support"],
             },
             "partition": {
-                "prefill_sms": state.greenspace_engine.prefill_sms if state.greenspace_engine else 12,
-                "decode_sms": state.greenspace_engine.decode_sms if state.greenspace_engine else 8,
-                "prefill_pct": 60,
-                "decode_pct": 40,
+                "prefill_sms": state.greenspace_engine.prefill_sms if state.greenspace_engine else None,
+                "decode_sms": state.greenspace_engine.decode_sms if state.greenspace_engine else None,
+                "prefill_pct": 100 * state.greenspace_engine.prefill_sms / gpu_info["sm_count"] if state.greenspace_engine else None,
+                "decode_pct": 100 * state.greenspace_engine.decode_sms / gpu_info["sm_count"] if state.greenspace_engine else None,
                 "workqueue_concurrency_limit": state.current_wq_limit,
                 "is_elastic_expanded": state.is_elastic_expanded
             },
@@ -203,39 +222,42 @@ async def update_pid(req: PIDUpdateRequest):
             state.config.slo.target_tpot_ms = req.target_tpot
             if state.greenspace_engine:
                 state.greenspace_engine.controller.target_tpot = req.target_tpot
+        if req.slo_threshold is not None:
+            state.config.slo.slo_threshold_ms = req.slo_threshold
+            if state.greenspace_engine:
+                state.greenspace_engine.controller.slo_threshold = req.slo_threshold
         if req.workqueue_limit is not None:
             state.current_wq_limit = req.workqueue_limit
             if state.greenspace_engine:
                 state.greenspace_engine.prefill_context.set_workqueue_concurrency_limit(req.workqueue_limit)
-        return {"status": "ok", "message": "PID and workqueue parameters updated"}
+        return {"status": "ok", "message": "Controller targets updated. Hardware workqueues are fixed at context creation."}
 
 
 @app.post("/api/burst")
 async def trigger_burst(req: BurstRequest):
-    prompt_len = max(128, min(8192, req.prompt_len))
+    prompt_len = max(128, min(state.config.max_model_len - 9, req.prompt_len))
     count = max(1, min(4, req.count))
     logger.info(f"Injecting burst traffic: {count} request(s) of {prompt_len} tokens in mode={state.mode}")
     
+    mode = state.mode
+    engine = state.greenspace_engine if mode == "greenspace" else state.monolithic_engine
+    if engine is None:
+        raise HTTPException(503, "Selected engine is unavailable")
+    tokens = np.random.randint(0, state.config.model.vocab_size, size=prompt_len).tolist()
     state.active_burst_in_flight = True
-    
-    # Run in thread so as not to block FastAPI event loop
-    def _execute_burst():
-        try:
-            tokens = [np.random.randint(50, 5000) for _ in range(prompt_len)]
-            if state.mode == "greenspace" and state.greenspace_engine:
-                for _ in range(count):
-                    r = state.greenspace_engine.add_request(prompt_token_ids=tokens, max_tokens=10)
-            elif state.mode == "monolithic" and state.monolithic_engine:
-                for _ in range(count):
-                    r = state.monolithic_engine.add_request(prompt_token_ids=tokens, max_tokens=10)
-                    state.monolithic_engine.step()
-        except Exception as e:
-            logger.error(f"Burst execution notice: {e}")
-        finally:
-            time.sleep(1.5)
-            state.active_burst_in_flight = False
-
-    threading.Thread(target=_execute_burst, daemon=True).start()
+    try:
+        if mode == "greenspace":
+            for _ in range(count):
+                engine.add_request(tokens, max_tokens=10)
+        else:
+            def run_burst():
+                with state.baseline_lock:
+                    requests = [engine.add_request(tokens, max_tokens=10) for _ in range(count)]
+                    while any(not request.is_finished() for request in requests):
+                        engine.step()
+            await asyncio.to_thread(run_burst)
+    finally:
+        state.active_burst_in_flight = False
     return {
         "status": "ok",
         "message": f"Injected {count} burst prompt(s) of {prompt_len} tokens in {state.mode} mode."
@@ -245,33 +267,36 @@ async def trigger_burst(req: BurstRequest):
 @app.post("/api/generate")
 async def generate_prompt(req: PromptRequest):
     prompt_len = req.prompt_len or len(req.prompt.split()) * 2 + 10
-    tokens = [100 + i for i in range(prompt_len)]
-    max_tokens = req.max_tokens
-    
+    if prompt_len + req.max_tokens - 1 > state.config.max_model_len:
+        raise HTTPException(422, "Request exceeds max_model_len")
+    tokens = [(100 + i) % state.config.model.vocab_size for i in range(prompt_len)]
+    mode = state.mode
+    engine = state.greenspace_engine if mode == "greenspace" else state.monolithic_engine
+    if engine is None:
+        raise HTTPException(503, "Selected engine is unavailable")
     t_start = time.perf_counter()
-    generated_tokens = []
-    token_latencies = []
-
-    # Submit to engine
-    if state.mode == "greenspace" and state.greenspace_engine:
-        r = state.greenspace_engine.add_request(prompt_token_ids=tokens, max_tokens=max_tokens)
-        t_wait_start = time.perf_counter()
-        while not r.is_finished() and (time.perf_counter() - t_wait_start < 5.0):
-            time.sleep(0.02)
-        generated_tokens = r.generated_token_ids or [np.random.randint(100, 2000) for _ in range(max_tokens)]
-        token_latencies = r.get_tpot_series() or [state.current_tpot + np.random.normal(0, 1.2) for _ in range(max_tokens)]
+    if mode == "greenspace":
+        r = engine.add_request(tokens, max_tokens=req.max_tokens)
+        while not r.is_finished():
+            await asyncio.sleep(0.01)
+        if r.error:
+            raise HTTPException(503, r.error)
     else:
-        # Monolithic or fallback
-        for _ in range(max_tokens):
-            step_lat = 24.5 + (np.random.uniform(280.0, 480.0) if state.active_burst_in_flight else np.random.normal(0, 1.5))
-            token_latencies.append(step_lat)
-            generated_tokens.append(np.random.randint(100, 2000))
-            time.sleep(0.01)
+        def generate():
+            with state.baseline_lock:
+                request = engine.add_request(tokens, max_tokens=req.max_tokens)
+                while not request.is_finished():
+                    engine.step()
+                return request
+        r = await asyncio.to_thread(generate)
+    generated_tokens = r.generated_token_ids
+    token_latencies = r.get_tpot_series()
 
     total_time = (time.perf_counter() - t_start) * 1000.0
     return {
         "status": "completed",
-        "mode": state.mode,
+        "mode": mode,
+        "input_source": "synthetic token IDs",
         "prompt": req.prompt,
         "prompt_tokens_count": prompt_len,
         "generated_tokens_count": len(generated_tokens),
@@ -307,7 +332,7 @@ async def get_kv_blocks():
             "capacity": 16,
             "layer_count": 8
         })
-    return {"total_blocks": total_blocks, "blocks": blocks}
+    return {"source": "simulation", "total_blocks": total_blocks, "blocks": blocks}
 
 
 @app.post("/api/test/barrier")
@@ -319,28 +344,18 @@ async def test_memory_barrier():
             d_stream = state.greenspace_engine.decode_executor.stream.torch_stream
             is_coherent, latency_us = GPUMemoryBarrier.verify_coherence(p_stream, d_stream, tensor_size=524288)
             return {
-                "status": "success",
+                "status": "success" if is_coherent else "failed",
                 "is_coherent": is_coherent,
                 "barrier_latency_us": round(latency_us, 2),
                 "barrier_latency_ms": round(latency_us / 1000.0, 4),
                 "network_latency_ms": 0.0, # Zero-Copy in HBM
                 "data_moved_bytes": 0
             }
-    except Exception as e:
-        logger.warning(f"Barrier live test notice: {e}")
-    
-    # Fallback simulated verified response
-    return {
-        "status": "success",
-        "is_coherent": True,
-        "barrier_latency_us": 14.2,
-        "barrier_latency_ms": 0.0142,
-        "network_latency_ms": 0.0,
-        "data_moved_bytes": 0
-    }
+    except Exception as error:
+        raise HTTPException(503, f"GPU barrier verification failed: {error}") from error
+    raise HTTPException(503, "GPU barrier verification requires an initialized engine")
 
 
-# Background Telemetry Generator & WebSocket Broadcaster
 async def telemetry_broadcaster_task():
     """High-frequency background loop streaming GPU state and telemetry to UI."""
     while True:
@@ -413,6 +428,7 @@ async def telemetry_broadcaster_task():
         }
 
         payload = {
+            "telemetry_source": "simulation",
             "step": state.steps_count,
             "mode": state.mode,
             "tpot_ms": round(state.current_tpot, 2),
@@ -437,19 +453,14 @@ async def telemetry_broadcaster_task():
         if state.connected_sockets:
             dead_sockets = []
             msg = json.dumps(payload)
-            for ws in state.connected_sockets:
+            for ws in list(state.connected_sockets):
                 try:
                     await ws.send_text(msg)
                 except Exception:
                     dead_sockets.append(ws)
             for ws in dead_sockets:
-                state.connected_sockets.remove(ws)
-
-
-@app.on_event("startup")
-async def on_startup():
-    logger.info("Starting background telemetry broadcaster task...")
-    asyncio.create_task(telemetry_broadcaster_task())
+                if ws in state.connected_sockets:
+                    state.connected_sockets.remove(ws)
 
 
 @app.websocket("/ws/telemetry")
