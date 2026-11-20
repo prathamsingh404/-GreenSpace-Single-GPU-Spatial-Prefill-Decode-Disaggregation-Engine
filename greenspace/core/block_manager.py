@@ -42,6 +42,8 @@ class BlockManager:
         """
         blocks_needed = (request.num_prompt_tokens + self.block_size - 1) // self.block_size
         with self._lock:
+            if request.request_id in self._block_tables:
+                raise ValueError(f"Blocks already allocated for {request.request_id}")
             if len(self._free_blocks) < blocks_needed:
                 raise RuntimeError(
                     f"Out of GPU HBM KV blocks: requested {blocks_needed}, free {len(self._free_blocks)}"
