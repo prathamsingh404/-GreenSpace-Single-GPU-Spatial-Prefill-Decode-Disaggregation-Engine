@@ -10,6 +10,7 @@ setup(
     install_requires=[
         "torch>=2.4.0",
         "cuda-bindings>=13.5,<14",
+        "nvidia-cuda-nvrtc>=13,<14",
         "numpy>=1.24.0",
         "matplotlib>=3.7.0",
         "seaborn>=0.12.0",

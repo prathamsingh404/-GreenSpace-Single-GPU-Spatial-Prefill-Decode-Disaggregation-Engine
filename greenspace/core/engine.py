@@ -19,6 +19,7 @@ from greenspace.scheduler.dual_scheduler import DualQueueScheduler
 from greenspace.cuda.driver import driver
 from greenspace.cuda.green_context import GreenContext
 from greenspace.hardware.green_context_pool import GreenContextLattice
+from greenspace.hardware.isolation_probe import verify_pairs
 from greenspace.cuda.event_coordinator import EventCoordinator
 from greenspace.core.controller import ClosedLoopPIDController
 from greenspace.core.prefill_executor import PrefillExecutor
@@ -53,6 +54,11 @@ class GreenSpaceEngineCore:
                 prefill_limit=gs.workqueue_concurrency_limit_prefill,
                 decode_limit=gs.workqueue_concurrency_limit_decode,
                 prefill_priority=gs.stream_priority_prefill, decode_priority=gs.stream_priority_decode)
+            try:
+                self.gpu_info["verified_sm_pairs"] = verify_pairs(self.lattice, self.device_id)
+            except BaseException:
+                self.lattice.close()
+                raise
             pair = self.lattice.get_pair(gs.sm_partition_decode)
             self.prefill_context, self.decode_context = pair.prefill, pair.decode
             p_stream, d_stream = pair.prefill_stream, pair.decode_stream

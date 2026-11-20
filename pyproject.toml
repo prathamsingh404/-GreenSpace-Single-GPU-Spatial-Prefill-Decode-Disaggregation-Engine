@@ -12,6 +12,7 @@ requires-python = ">=3.10"
 dependencies = [
     "torch>=2.4.0",
     "cuda-bindings>=13.5,<14",
+    "nvidia-cuda-nvrtc>=13,<14",
     "numpy>=1.24.0",
     "matplotlib>=3.7.0",
     "seaborn>=0.12.0",
@@ -20,7 +21,8 @@ dependencies = [
 
 [project.optional-dependencies]
 web = ["fastapi>=0.100", "uvicorn[standard]>=0.23"]
-audit = ["pytest>=8", "nvidia-cuda-nvrtc>=13,<14"]
+audit = ["pytest>=8"]
 
 [tool.setuptools.package-data]
+"greenspace.hardware" = ["*.cuh"]
 "greenspace.web" = ["static/*.html"]

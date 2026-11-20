@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 project(greenspace LANGUAGES CXX)
 find_package(CUDAToolkit 12.6 REQUIRED)
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/record_smids.cuh" SMID_SOURCE)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS record_smids.cuh)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../greenspace/hardware/record_smids.cuh" SMID_SOURCE)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ../greenspace/hardware/record_smids.cuh)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/probe_source.h" "constexpr char kernel_source[] = R\"cuda(${SMID_SOURCE})cuda\";\n")
 # NVRTC compiles the embedded CUDA source with NVRTC for the selected device.
 set_source_files_properties(green_ctx_probe.cu PROPERTIES LANGUAGE CXX)
