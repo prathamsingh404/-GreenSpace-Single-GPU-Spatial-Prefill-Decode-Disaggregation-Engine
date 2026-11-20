@@ -38,7 +38,8 @@ class PrefillExecutor:
         scheduler: DualQueueScheduler,
         prefill_context: GreenContext,
         event_coordinator: EventCoordinator,
-        controller: Optional[ClosedLoopPIDController] = None
+        controller: Optional[ClosedLoopPIDController] = None,
+        stream: Optional[GreenStream] = None
     ):
         self.config = config
         self.model = model
@@ -50,7 +51,7 @@ class PrefillExecutor:
         self.controller = controller
 
         # Allocate dedicated Green Context stream for prefill
-        self.stream: GreenStream = self.prefill_context.Stream()
+        self.stream: GreenStream = stream or self.prefill_context.Stream()
         
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -66,7 +67,7 @@ class PrefillExecutor:
     def stop(self):
         self._running = False
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=2.0)
+            self._thread.join()
         logger.info("Prefill Executor stopped.")
 
     def _run_loop(self):
@@ -82,9 +83,12 @@ class PrefillExecutor:
                 self._process_prefill(request)
             except Exception as e:
                 logger.error(f"Error processing prefill for request {request.request_id}: {e}", exc_info=True)
+                self.stream.synchronize()
+                self.event_coordinator.release_request(request)
                 self.block_manager.free(request)
-                self.scheduler.mark_finished(request)
+                self.scheduler.mark_finished(request, e)
 
+    @torch.inference_mode()
     def _process_prefill(self, request: Request):
         request.prefill_start_time = time.perf_counter()
 
@@ -109,7 +113,13 @@ class PrefillExecutor:
         request.record_generated_token(first_token)
 
         # Step 4: Instantly pass pointer to Decode queue (zero data copied!)
-        self.scheduler.transfer_to_decode(request)
+        if request.is_finished():
+            self.event_coordinator.release_request(request)
+            self.block_manager.free(request)
+            request.finish_time = time.perf_counter()
+            self.scheduler.mark_finished(request)
+        else:
+            self.scheduler.transfer_to_decode(request)
 
         self.total_prefills_processed += 1
         self.total_prefill_tokens_processed += request.num_prompt_tokens
