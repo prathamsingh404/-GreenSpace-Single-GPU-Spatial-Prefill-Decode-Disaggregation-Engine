@@ -1,0 +1,130 @@
+{
+  "command": "python -m pytest -q -W error -o faulthandler_timeout=120",
+  "tests": 24,
+  "failures": 1,
+  "errors": 0,
+  "skipped": 0,
+  "seconds": 32.66,
+  "cases": [
+    {
+      "name": "tests.test_cp1_hardware_isolation.test_physical_smids",
+      "seconds": 0.247,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_cp1_hardware_isolation.test_concurrent_latency_and_trace",
+      "seconds": 4.638,
+      "status": "failed"
+    },
+    {
+      "name": "tests.test_cp1_hardware_isolation.test_lifecycle",
+      "seconds": 0.01,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_engine_e2e.TestEngineE2E.test_block_manager_lifecycle",
+      "seconds": 0.001,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_engine_e2e.TestEngineE2E.test_engine_inference_e2e",
+      "seconds": 6.282,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_green_context.TestGreenContext.test_device_info",
+      "seconds": 0.002,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_green_context.TestGreenContext.test_green_context_lifecycle",
+      "seconds": 13.115,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_models.TestModelArchitecture.test_mlp_forward",
+      "seconds": 0.499,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_models.TestModelArchitecture.test_model_prefill_and_decode",
+      "seconds": 1.348,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_models.TestModelArchitecture.test_rmsnorm_forward",
+      "seconds": 1.02,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_paged_kv_cache.TestPagedKVCachePool.test_cache_structure",
+      "seconds": 0.004,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_paged_kv_cache.TestPagedKVCachePool.test_write_and_gather_token_kv",
+      "seconds": 0.006,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_pid_controller.TestPIDController.test_elastic_rebalancing",
+      "seconds": 0.003,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_pid_controller.TestPIDController.test_nominal_state",
+      "seconds": 0.003,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_pid_controller.TestPIDController.test_throttling_on_violation",
+      "seconds": 0.002,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_request.TestRequestLifecycle.test_block_tracking",
+      "seconds": 0.002,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_request.TestRequestLifecycle.test_initial_state",
+      "seconds": 0.002,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_request.TestRequestLifecycle.test_token_generation_and_tpot",
+      "seconds": 0.012,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_runtime_regressions.test_saturated_queue_and_single_token_completion",
+      "seconds": 1.102,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_runtime_regressions.test_decode_oom_and_duplicate_admission",
+      "seconds": 0.112,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_scheduler.TestDualQueueScheduler.test_enqueue_prefill",
+      "seconds": 0.001,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_scheduler.TestDualQueueScheduler.test_schedule_prefill_and_handoff",
+      "seconds": 0.001,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_zero_copy_handoff.TestZeroCopyHandoff.test_event_coordinator_lifecycle",
+      "seconds": 0.002,
+      "status": "passed"
+    },
+    {
+      "name": "tests.test_zero_copy_handoff.TestZeroCopyHandoff.test_memory_barrier_coherence",
+      "seconds": 0.03,
+      "status": "passed"
+    }
+  ]
+}
