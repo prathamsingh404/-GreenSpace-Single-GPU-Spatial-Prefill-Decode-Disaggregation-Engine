@@ -33,14 +33,15 @@ def run_interactive_demo():
 
     info = engine.gpu_info
     console.print(f"[bold]Target Hardware:[/bold] {info['name']} (Compute Capability {info['compute_capability'][0]}.{info['compute_capability'][1]})")
-    console.print(f"[bold]Spatial Partitioning:[/bold] [red]{engine.prefill_sms} SMs Prefill Zone (60%)[/red] | [green]{engine.decode_sms} SMs Decode Zone (40%)[/green]")
+    console.print(f"[bold]Spatial Partitioning:[/bold] [red]{engine.prefill_sms} SMs Prefill Zone ({engine.prefill_sms / engine.total_sms:.0%})[/red] | [green]{engine.decode_sms} SMs Decode Zone ({engine.decode_sms / engine.total_sms:.0%})[/green]")
     console.print(f"[bold]Unified Cache Pool:[/bold] {config.cache.num_gpu_blocks} physical blocks in HBM ({config.cache.block_size} tokens/block)\n")
 
     # Start workload
     console.print("[bold cyan]Submitting Concurrent Workload:[/bold cyan]")
     console.print("  • 4 Continuous Background Decode Streams (Target steady-state decode)")
-    console.print("  • Heavy Prompt Bursts injected simultaneously (1024 tokens & 2048 tokens)\n")
+    console.print("  • A 1024-token prompt burst\n")
 
+    started = time.perf_counter()
     requests = []
     # 4 background decode streams
     for i in range(4):
@@ -71,7 +72,7 @@ def run_interactive_demo():
             time.sleep(0.1)
         progress.update(task, completed=len(requests))
 
-    report = MetricsTracker.analyze_requests(requests, wall_clock_seconds=5.0)
+    report = MetricsTracker.analyze_requests(requests, wall_clock_seconds=time.perf_counter() - started)
 
     # Display Telemetry Results Table
     table = Table(title="Live Inference Telemetry & Latency SLO Report", border_style="cyan")
@@ -80,17 +81,21 @@ def run_interactive_demo():
     table.add_column("Target SLO / Threshold", style="yellow")
     table.add_column("Status", style="bold")
 
-    table.add_row("Mean TPOT", f"{report.mean_tpot_ms:.2f} ms", "20.00 ms", "[green]PASS[/green]")
-    table.add_row("P50 Median TPOT", f"{report.median_tpot_ms:.2f} ms", "20.00 ms", "[green]PASS[/green]")
-    table.add_row("P99 Tail TPOT", f"{report.p99_tpot_ms:.2f} ms", "25.00 ms", "[green]STABLE[/green]")
-    table.add_row("Max Latency Spike", f"{report.max_tpot_ms:.2f} ms", "< 30.00 ms", "[green]CONTROLLED[/green]")
-    table.add_row("Jitter (TPOT Std-Dev)", f"{report.std_tpot_ms:.2f} ms", "< 3.00 ms", "[green]LOW JITTER[/green]")
-    table.add_row("Mean Time To First Token", f"{report.mean_ttft_ms:.2f} ms", "< 150.00 ms", "[green]EXCELLENT[/green]")
-    table.add_row("Throughput", f"{report.throughput_tokens_per_sec:.2f} tok/s", "-", "[cyan]OPTIMAL[/cyan]")
+    rows = [
+        ("Mean TPOT", report.mean_tpot_ms, config.slo.target_tpot_ms),
+        ("P50 Median TPOT", report.median_tpot_ms, config.slo.target_tpot_ms),
+        ("P99 Tail TPOT", report.p99_tpot_ms, config.slo.slo_threshold_ms),
+        ("Maximum token interval", report.max_tpot_ms, config.slo.slo_threshold_ms),
+    ]
+    for label, value, target in rows:
+        status = "[green]PASS[/green]" if value <= target else "[red]MISS[/red]"
+        table.add_row(label, f"{value:.2f} ms", f"{target:.2f} ms", status)
+    table.add_row("Mean time to first token", f"{report.mean_ttft_ms:.2f} ms", "-", "-")
+    table.add_row("Throughput", f"{report.throughput_tokens_per_sec:.2f} tok/s", "-", "-")
 
     console.print(table)
     engine.stop()
-    console.print("\n[bold green]✓ Project GreenSpace execution completed with zero deadline violations![/bold green]")
+    console.print("\n[bold green]✓ Project GreenSpace execution completed.[/bold green]")
 
 
 if __name__ == "__main__":
