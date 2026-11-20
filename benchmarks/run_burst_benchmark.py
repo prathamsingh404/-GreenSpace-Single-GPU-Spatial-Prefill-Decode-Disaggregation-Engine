@@ -10,7 +10,7 @@ import time
 import argparse
 import logging
 from typing import List, Dict, Any
-import numpy as np
+import torch
 
 from greenspace.core.config import EngineConfig, GreenSpaceConfig, SLOConfig, ModelConfig
 from greenspace.core.engine import GreenSpaceEngineCore
@@ -29,10 +29,12 @@ def run_workload_on_greenspace(
 ) -> LatencyReport:
     """Executes burst workload on GreenSpace Engine with spatial Green Contexts and PID."""
     logger.info(">>> Running Benchmark on Project GreenSpace EngineCore...")
+    torch.manual_seed(0)
     config = EngineConfig()
     engine = GreenSpaceEngineCore(config)
     engine.start()
 
+    t_start = time.perf_counter()
     requests = []
     # 1. Start background decode streams
     for i in range(num_background_streams):
@@ -44,7 +46,11 @@ def run_workload_on_greenspace(
         requests.append(req)
 
     # Allow background streams to enter decode phase
-    time.sleep(0.5)
+    while max(req.num_generated_tokens for req in requests) < burst_step:
+        if all(req.is_finished() for req in requests) or time.perf_counter() - t_start > 30:
+            engine.stop()
+            raise RuntimeError("Background workload ended before burst injection")
+        time.sleep(.001)
 
     # 2. Inject heavy burst prompts while background streams are actively decoding
     logger.info(f"Injecting {len(burst_prompts)} heavy prompt bursts...")
@@ -55,10 +61,8 @@ def run_workload_on_greenspace(
             request_id=f"heavy-burst-{idx}-{prompt_len}tok"
         )
         requests.append(burst_req)
-        time.sleep(0.1)
 
     # 3. Wait for all requests to complete
-    t_start = time.perf_counter()
     timeout = 30.0
     while time.perf_counter() - t_start < timeout:
         if all(r.is_finished() for r in requests):
@@ -66,8 +70,8 @@ def run_workload_on_greenspace(
         time.sleep(0.05)
 
     wall_clock = time.perf_counter() - t_start
-    report = MetricsTracker.analyze_requests(requests, wall_clock)
     engine.stop()
+    report = MetricsTracker.analyze_requests(requests, wall_clock)
     return report
 
 
@@ -79,9 +83,11 @@ def run_workload_on_monolithic(
 ) -> LatencyReport:
     """Executes burst workload on Baseline Monolithic Engine without spatial isolation."""
     logger.info(">>> Running Benchmark on Baseline Monolithic Engine...")
+    torch.manual_seed(0)
     config = EngineConfig()
     engine = MonolithicEngine(config)
 
+    t_start = time.perf_counter()
     requests = []
     for i in range(num_background_streams):
         req = engine.add_request(
@@ -91,13 +97,12 @@ def run_workload_on_monolithic(
         )
         requests.append(req)
 
-    t_start = time.perf_counter()
     step_idx = 0
     burst_injected = False
 
     while any(not r.is_finished() for r in requests) and step_idx < 100:
         # Inject bursts at specific step
-        if step_idx == burst_step and not burst_injected:
+        if max(req.num_generated_tokens for req in requests) >= burst_step and not burst_injected:
             logger.info(f"Injecting {len(burst_prompts)} heavy prompt bursts into monolithic queue...")
             for idx, prompt_len in enumerate(burst_prompts):
                 burst_req = engine.add_request(
